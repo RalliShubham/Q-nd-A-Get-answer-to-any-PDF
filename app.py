@@ -1,307 +1,263 @@
 import streamlit as st
-import os
-from pypdf import PdfReader
-import tempfile
-import re
+from transformers import pipeline
 
 # Set page config
 st.set_page_config(
-    page_title="PDF Question Answering",
-    page_icon="📄",
+    page_title="Text Question Answering",
+    page_icon="📝",
     layout="wide"
 )
 
-# Cache the model loading with a better model
+# Show loading animation immediately
+if 'app_loaded' not in st.session_state:
+    st.session_state.app_loaded = False
+
+if not st.session_state.app_loaded:
+    # Show loading screen
+    st.markdown("""
+    <div style="display: flex; justify-content: center; align-items: center; height: 50vh;">
+        <div style="text-align: center;">
+            <div style="border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 0 auto;"></div>
+            <h3 style="margin-top: 20px;">Loading Application...</h3>
+            <p>Please wait while we initialize the system</p>
+        </div>
+    </div>
+    <style>
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Load the model in the background
+    with st.spinner("Initializing AI model..."):
+        try:
+            qa_model = pipeline(task='question-answering', model='deepset/roberta-base-squad2')
+            st.session_state.qa_model = qa_model
+            st.session_state.app_loaded = True
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error loading model: {str(e)}")
+            st.stop()
+
+# Cache the model loading
 @st.cache_resource
 def load_qa_model():
     try:
-        from transformers import pipeline
-        # Using a better model that gives longer, more complete answers
-        return pipeline(
-            task="question-answering", 
-            model="deepset/roberta-base-squad2",  # Better model for longer answers
-            tokenizer="deepset/roberta-base-squad2"
-        )
+        return pipeline(task='question-answering', model='deepset/roberta-base-squad2')
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
         return None
 
-def clean_text(text):
-    """Clean and preprocess extracted text"""
-    if not text:
-        return ""
-    
-    # Remove excessive whitespace and newlines
-    text = re.sub(r'\n+', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
-    
-    # Fix common PDF extraction issues
-    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Add space between camelCase
-    text = re.sub(r'(\d+)([A-Za-z])', r'\1 \2', text)  # Add space between numbers and letters
-    text = re.sub(r'([A-Za-z])(\d+)', r'\1 \2', text)  # Add space between letters and numbers
-    
-    # Remove extra spaces
-    text = ' '.join(text.split())
-    
-    return text.strip()
-
-@st.cache_data
-def extract_text_from_pdf(uploaded_file):
-    """Extract and clean text from uploaded PDF file"""
-    try:
-        # Create a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_file_path = tmp_file.name
-        
-        # Read the PDF
-        reader = PdfReader(tmp_file_path)
-        document_text = ""
-        
-        for page_num, page in enumerate(reader.pages):
-            try:
-                page_text = page.extract_text()
-                if page_text:
-                    # Clean the text from this page
-                    cleaned_page_text = clean_text(page_text)
-                    document_text += cleaned_page_text + " "
-            except Exception as e:
-                st.warning(f"Could not extract text from page {page_num + 1}")
-                continue
-        
-        # Clean up temporary file
-        os.unlink(tmp_file_path)
-        
-        # Final cleaning
-        final_text = clean_text(document_text)
-        return final_text
-        
-    except Exception as e:
-        st.error(f"Error reading PDF: {str(e)}")
-        return None
-
-def find_relevant_context(question, full_text, max_length=2000):
-    """Find the most relevant part of the document for the question"""
-    if not full_text or len(full_text) <= max_length:
-        return full_text
-    
-    # Convert question to lowercase for matching
-    question_lower = question.lower()
-    question_words = question_lower.split()
-    
-    # Split text into sentences
-    sentences = re.split(r'[.!?]+', full_text)
-    
-    # Score sentences based on question word matches
-    scored_sentences = []
-    for sentence in sentences:
-        if len(sentence.strip()) < 10:  # Skip very short sentences
-            continue
-            
-        sentence_lower = sentence.lower()
-        score = 0
-        
-        # Count question word matches
-        for word in question_words:
-            if len(word) > 2:  # Skip very short words
-                score += sentence_lower.count(word)
-        
-        scored_sentences.append((score, sentence.strip()))
-    
-    # Sort by score and take top sentences
-    scored_sentences.sort(key=lambda x: x[0], reverse=True)
-    
-    # Build context from top-scoring sentences
-    context = ""
-    for score, sentence in scored_sentences:
-        if len(context) + len(sentence) > max_length:
-            break
-        if score > 0:  # Only include sentences with some relevance
-            context += sentence + ". "
-    
-    # If no relevant sentences found, use the beginning of the document
-    if not context.strip():
-        context = full_text[:max_length]
-    
-    return context.strip()
-
-def get_answer(question, context, qa_pipeline):
-    """Get answer from the QA pipeline with better processing"""
-    if qa_pipeline is None:
-        return None
-        
-    try:
-        # Find relevant context
-        relevant_context = find_relevant_context(question, context, max_length=1500)
-        
-        if not relevant_context:
-            return None
-        
-        # Get answer from model
-        result = qa_pipeline(
-            question=question, 
-            context=relevant_context,
-            max_answer_len=100,  # Allow longer answers
-            handle_impossible_answer=True
-        )
-        
-        return result
-        
-    except Exception as e:
-        st.error(f"Error getting answer: {str(e)}")
-        return None
-
 def main():
-    st.title("📄 PDF Question Answering System")
-    st.markdown("Upload a PDF document and ask questions about its content!")
+    st.title("Document Question Answering System")
+    st.markdown("Analyze your documents and get answers to your questions using advanced AI")
     
     # Initialize session state
     if 'document_text' not in st.session_state:
-        st.session_state.document_text = None
-    if 'filename' not in st.session_state:
-        st.session_state.filename = None
-    if 'qa_model' not in st.session_state:
-        st.session_state.qa_model = None
+        st.session_state.document_text = ""
+    if 'current_question' not in st.session_state:
+        st.session_state.current_question = ""
     
-    # Sidebar for file upload
+    # Sidebar for text input
     with st.sidebar:
-        st.header("📤 Upload Document")
-        uploaded_file = st.file_uploader(
-            "Choose a PDF file",
-            type=['pdf'],
-            help="Upload a PDF document to analyze"
+        st.header("Document Input")
+        
+        # Text input area
+        user_text = st.text_area(
+            "Paste your document text here:",
+            value=st.session_state.document_text,
+            height=400,
+            placeholder="Paste your document text here and ask questions about its content.",
+            help="Copy and paste the text from your document here"
         )
         
-        if uploaded_file is not None:
-            if st.session_state.filename != uploaded_file.name:
-                st.session_state.filename = uploaded_file.name
-                with st.spinner("Extracting and processing text from PDF..."):
-                    st.session_state.document_text = extract_text_from_pdf(uploaded_file)
-                
-                if st.session_state.document_text:
-                    st.success("✅ PDF processed successfully!")
-                    st.info(f"📊 Extracted {len(st.session_state.document_text)} characters")
-                    
-                    # Show a sample of cleaned text
-                    with st.expander("📖 View extracted text sample"):
-                        sample_text = st.session_state.document_text[:500] + "..." if len(st.session_state.document_text) > 500 else st.session_state.document_text
-                        st.text(sample_text)
+        # Update button
+        if st.button("Load Text", type="primary"):
+            if user_text.strip():
+                st.session_state.document_text = user_text.strip()
+                st.success("Text loaded successfully")
+                st.info(f"Characters: {len(st.session_state.document_text)}")
+                st.info(f"Words: {len(st.session_state.document_text.split())}")
+            else:
+                st.warning("Please paste some text first")
+        
+        # Text statistics
+        if st.session_state.document_text:
+            st.markdown("---")
+            st.markdown("**Document Statistics:**")
+            st.info(f"Characters: {len(st.session_state.document_text):,}")
+            st.info(f"Words: {len(st.session_state.document_text.split()):,}")
     
     # Main content area
     if st.session_state.document_text:
-        col1, col2 = st.columns([2, 1])
+        # Create tabs
+        tab1, tab2 = st.tabs(["Question & Answer", "Document View"])
         
-        with col1:
-            st.header("🤖 Ask Questions")
+        with tab1:
+            st.success("AI model loaded and ready")
             
-            # Load QA model only when needed
-            if st.session_state.qa_model is None:
-                with st.spinner("Loading AI model... This may take a moment on first load."):
-                    st.session_state.qa_model = load_qa_model()
-            
-            if st.session_state.qa_model is None:
-                st.error("❌ Could not load the AI model. Please try refreshing the page.")
-                return
-            
-            # Provide example questions
-            st.markdown("**💡 Try these example questions:**")
-            example_questions = [
-                "What is the policy on PTO?",
-                "What are the working hours?",
-                "What is the notice period for resignation?",
-                "What are the benefits provided?",
-                "What is the dress code policy?"
-            ]
-            
-            selected_example = st.selectbox("Choose an example question:", [""] + example_questions)
+            st.header("Ask Your Question")
             
             # Question input
             question = st.text_input(
                 "Enter your question:",
-                value=selected_example if selected_example else "",
-                placeholder="e.g., What is the policy on paid time off?",
+                value=st.session_state.current_question,
+                placeholder="Type your question about the document...",
                 key="question_input"
             )
             
-            if st.button("🔍 Get Answer", type="primary"):
-                if question.strip():
-                    with st.spinner("Analyzing document and finding answer..."):
-                        result = get_answer(question, st.session_state.document_text, st.session_state.qa_model)
+            # Update session state when question changes
+            if question != st.session_state.current_question:
+                st.session_state.current_question = question
+            
+            if st.button("Get Answer", type="primary", use_container_width=True):
+                if st.session_state.current_question.strip():
+                    st.info(f"Analyzing: {st.session_state.current_question}")
                     
-                    if result and result.get('answer'):
-                        st.subheader("💡 Answer:")
-                        
-                        # Display the answer with better formatting
-                        answer = result['answer'].strip()
-                        st.markdown(f"**{answer}**")
-                        
-                        confidence = round(result.get('score', 0) * 100, 1)
-                        
-                        # Color-code confidence
-                        if confidence >= 70:
-                            st.success(f"✅ High Confidence: {confidence}%")
-                        elif confidence >= 40:
-                            st.warning(f"⚠️ Medium Confidence: {confidence}%")
-                        else:
-                            st.error(f"❌ Low Confidence: {confidence}%")
-                            st.info("💡 Try rephrasing your question or check if the information exists in the document.")
-                        
-                        # Show the context that was used
-                        with st.expander("📄 View relevant text section"):
-                            relevant_context = find_relevant_context(question, st.session_state.document_text)
-                            st.text_area("Context used for answer:", relevant_context, height=150)
+                    with st.spinner("Processing your question..."):
+                        try:
+                            prediction = st.session_state.qa_model(
+                                question=st.session_state.current_question, 
+                                context=st.session_state.document_text
+                            )
                             
-                    else:
-                        st.error("❌ Could not find an answer to your question in the document.")
-                        st.info("💡 Try rephrasing your question or make sure the information exists in the document.")
+                            st.markdown("---")
+                            st.subheader("Answer:")
+                            
+                            # Answer display
+                            st.markdown(f"""
+                            <div style="
+                                background-color: #f0f2f6;
+                                padding: 20px;
+                                border-radius: 10px;
+                                border-left: 5px solid #1f77b4;
+                                margin: 10px 0;
+                            ">
+                                <h3 style="margin-top: 0; color: #1f77b4;">
+                                    {prediction['answer']}
+                                </h3>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            # Confidence metrics
+                            confidence = round(prediction['score'] * 100, 1)
+                            
+                            col_conf1, col_conf2, col_conf3 = st.columns(3)
+                            with col_conf1:
+                                st.metric("Confidence", f"{confidence}%")
+                            
+                            with col_conf2:
+                                if confidence >= 60:
+                                    st.success("High Confidence")
+                                elif confidence >= 30:
+                                    st.warning("Medium Confidence")
+                                else:
+                                    st.error("Low Confidence")
+                            
+                            with col_conf3:
+                                st.metric("Answer Length", f"{len(prediction['answer'])} chars")
+                            
+                            # Context view
+                            answer_text = prediction['answer']
+                            if answer_text in st.session_state.document_text:
+                                start_pos = st.session_state.document_text.find(answer_text)
+                                context_start = max(0, start_pos - 200)
+                                context_end = min(len(st.session_state.document_text), start_pos + len(answer_text) + 200)
+                                context_snippet = st.session_state.document_text[context_start:context_end]
+                                
+                                with st.expander("View answer in context"):
+                                    highlighted_context = context_snippet.replace(answer_text, f"**{answer_text}**")
+                                    st.markdown(highlighted_context)
+                            
+                            # Technical details
+                            with st.expander("Technical Details"):
+                                st.json(prediction)
+                            
+                        except Exception as e:
+                            st.error(f"Error processing question: {str(e)}")
                 else:
-                    st.warning("Please enter a question!")
+                    st.warning("Please enter a question")
         
-        with col2:
-            st.header("📋 Document Info")
-            st.write(f"**Filename:** {st.session_state.filename}")
-            st.write(f"**Text Length:** {len(st.session_state.document_text):,} characters")
+        with tab2:
+            st.header("Document Content")
+            st.info(f"Document length: {len(st.session_state.document_text)} characters")
             
-            # Show text preview
-            st.subheader("📖 Text Preview")
-            preview_text = st.session_state.document_text[:300] + "..." if len(st.session_state.document_text) > 300 else st.session_state.document_text
-            st.text_area("", preview_text, height=200, disabled=True)
+            # Search functionality
+            search_term = st.text_input("Search in document:", placeholder="Enter text to highlight...")
             
-            # Tips for better questions
-            st.subheader("💡 Tips for Better Results")
-            st.markdown("""
-            - Ask specific questions
-            - Use keywords from the document
-            - Try different phrasings
-            - Ask about one topic at a time
-            """)
+            if search_term and search_term.strip():
+                # Create highlighted version using HTML
+                highlighted_text = st.session_state.document_text.replace(
+                    search_term, 
+                    f'<mark style="background-color: yellow; padding: 2px 4px; border-radius: 3px;">{search_term}</mark>'
+                )
+                
+                st.markdown("**Document with highlighted search results:**")
+                st.markdown(
+                    f'<div style="background-color: white; padding: 20px; border-radius: 5px; border: 1px solid #ddd; height: 500px; overflow-y: scroll; font-family: monospace; white-space: pre-wrap;">{highlighted_text}</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.text_area(
+                    "Full document:",
+                    st.session_state.document_text,
+                    height=500,
+                    disabled=True
+                )
+            
+            # Download option
+            st.download_button(
+                label="Download as text file",
+                data=st.session_state.document_text,
+                file_name="document.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
     
     else:
-        # Welcome screen
+        # Instructions
         st.markdown("""
-        ## 🚀 How it works:
+        ## Getting Started
         
-        1. **Upload** a PDF document using the sidebar
-        2. **Wait** for text extraction and processing
-        3. **Ask** specific questions about the document content
-        4. **Get** AI-powered answers with confidence scores!
+        ### Features:
+        - Advanced natural language processing using RoBERTa model
+        - Confidence scoring for answer reliability
+        - Context highlighting to show source of answers
+        - Document search and download capabilities
         
-        ### 📝 Example questions you can ask:
-        - What is the policy on paid time off?
-        - What are the working hours mentioned?
-        - What is the notice period for resignation?
-        - What benefits are provided to employees?
-        - What is the dress code policy?
+        ### How to use:
+        1. Paste your document text in the sidebar
+        2. Click "Load Text" to process the document
+        3. Type your question in the main area
+        4. Get answers with confidence scores
         
-        ### 🔧 Features:
-        - ✅ Advanced text extraction and cleaning
-        - ✅ Smart context selection for better answers
-        - ✅ Confidence scoring
-        - ✅ Relevant text highlighting
-        
-        ### 🚀 Get Started:
-        Upload a PDF file using the sidebar to begin!
+        ### Tips:
+        - Longer documents provide better context for answers
+        - Ask specific questions about information in your document
+        - Check confidence scores to evaluate answer reliability
+        - Use the context view to verify answers
         """)
+        
+        # Example
+        with st.expander("Example Document Text"):
+            st.code("""
+Employee Handbook - Working Conditions and Benefits
+
+Working Hours:
+The company is open Monday through Friday from 9:00 AM to 6:00 PM.
+Saturday hours are 10:00 AM to 4:00 PM. The office is closed on Sundays.
+
+Benefits:
+Full-time employees are eligible for health insurance after 90 days.
+Paid time off accrues at 1.5 days per month for the first year.
+The company observes 10 federal holidays annually.
+
+Compensation:
+Salary reviews are conducted annually in January.
+Overtime is paid at 1.5 times the regular rate for hours over 40 per week.
+            """)
 
 if __name__ == "__main__":
     main()
