@@ -1,5 +1,4 @@
 import streamlit as st
-from transformers import pipeline
 
 # Set page config
 st.set_page_config(
@@ -8,9 +7,22 @@ st.set_page_config(
     layout="wide"
 )
 
+# Try to import transformers with error handling
+try:
+    from transformers import pipeline
+    TRANSFORMERS_AVAILABLE = True
+except ImportError as e:
+    st.error(f"Error importing transformers: {e}")
+    st.error("Please make sure transformers is properly installed")
+    TRANSFORMERS_AVAILABLE = False
+
 # Show loading animation immediately
 if 'app_loaded' not in st.session_state:
     st.session_state.app_loaded = False
+
+if not TRANSFORMERS_AVAILABLE:
+    st.error("Transformers library is not available. Please check your requirements.txt file.")
+    st.stop()
 
 if not st.session_state.app_loaded:
     # Show loading screen
@@ -39,6 +51,7 @@ if not st.session_state.app_loaded:
             st.rerun()
         except Exception as e:
             st.error(f"Error loading model: {str(e)}")
+            st.error("This might be due to insufficient memory or network issues on Streamlit Cloud")
             st.stop()
 
 # Cache the model loading
