@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 from pypdf import PdfReader
-from transformers import pipeline
 import tempfile
 
 # Set page config
@@ -11,13 +10,18 @@ st.set_page_config(
     layout="wide"
 )
 
-# Cache the model loading
+# Cache the model loading with better error handling
 @st.cache_resource
 def load_qa_model():
-    return pipeline(
-        task="question-answering", 
-        model="distilbert-base-cased-distilled-squad"
-    )
+    try:
+        from transformers import pipeline
+        return pipeline(
+            task="question-answering", 
+            model="distilbert-base-cased-distilled-squad"
+        )
+    except Exception as e:
+        st.error(f"Error loading model: {str(e)}")
+        return None
 
 @st.cache_data
 def extract_text_from_pdf(uploaded_file):
@@ -45,6 +49,9 @@ def extract_text_from_pdf(uploaded_file):
 
 def get_answer(question, context, qa_pipeline):
     """Get answer from the QA pipeline"""
+    if qa_pipeline is None:
+        return None
+        
     try:
         # Truncate context if too long
         max_context_length = 4000
@@ -66,6 +73,8 @@ def main():
         st.session_state.document_text = None
     if 'filename' not in st.session_state:
         st.session_state.filename = None
+    if 'qa_model' not in st.session_state:
+        st.session_state.qa_model = None
     
     # Sidebar for file upload
     with st.sidebar:
@@ -93,9 +102,14 @@ def main():
         with col1:
             st.header("🤖 Ask Questions")
             
-            # Load QA model
-            with st.spinner("Loading AI model..."):
-                qa_pipeline = load_qa_model()
+            # Load QA model only when needed
+            if st.session_state.qa_model is None:
+                with st.spinner("Loading AI model... This may take a moment on first load."):
+                    st.session_state.qa_model = load_qa_model()
+            
+            if st.session_state.qa_model is None:
+                st.error("❌ Could not load the AI model. Please try refreshing the page.")
+                return
             
             # Question input
             question = st.text_input(
@@ -107,7 +121,7 @@ def main():
             if st.button("🔍 Get Answer", type="primary"):
                 if question.strip():
                     with st.spinner("Finding answer..."):
-                        result = get_answer(question, st.session_state.document_text, qa_pipeline)
+                        result = get_answer(question, st.session_state.document_text, st.session_state.qa_model)
                     
                     if result:
                         st.subheader("💡 Answer:")
@@ -118,6 +132,8 @@ def main():
                         
                         if confidence < 50:
                             st.warning("⚠️ Low confidence answer. The information might not be in the document.")
+                    else:
+                        st.error("❌ Could not generate an answer. Please try a different question.")
                 else:
                     st.warning("Please enter a question!")
         
@@ -150,6 +166,9 @@ def main():
         - Uses DistilBERT model for question answering
         - Supports PDF text extraction
         - Provides confidence scores for answers
+        
+        ### 🚀 Get Started:
+        Upload a PDF file using the sidebar to begin!
         """)
 
 if __name__ == "__main__":
