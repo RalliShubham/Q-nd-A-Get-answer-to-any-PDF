@@ -1,5 +1,6 @@
 streamlit
 pypdf
-transformers
-torch
-tokenizers
+transformers>=4.21.0
+torch>=1.12.0
+tokenizers>=0.13.0
+tensorflow-cpu
